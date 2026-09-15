@@ -1,4 +1,4 @@
-timestamp,edits_per_hour,unique_editors,new_editors,mean_edit_size,revert_rate,bot_edit_share,hidden_user_share,editor_churn
+timestamp,edits_count,unique_editors,new_editors,mean_edit_size,revert_rate,bot_edit_share,hidden_user_share,editor_churn
 2020-08-26 19:00:00+00:00,1.0,1.0,1.0,26.0,0.0,0.0,0.0,1.0
 2020-08-26 20:00:00+00:00,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
 2020-08-26 21:00:00+00:00,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0

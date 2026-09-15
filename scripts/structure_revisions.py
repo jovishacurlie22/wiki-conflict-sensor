@@ -1,12 +1,20 @@
 """
-Turn raw revision JSON (from fetch_revisions.py) into an hourly time series
-of edit activity metrics: edits_per_hour, unique_editors, new_editors,
-editor_churn, mean_edit_size, revert_rate.
+Turn raw revision JSON (from fetch_revisions.py) into a time series of edit
+activity metrics: edits_count, unique_editors, new_editors, editor_churn,
+mean_edit_size, revert_rate, bot_edit_share, hidden_user_share.
+
+The --freq flag sets the bin width (any pandas offset alias, e.g. "1h",
+"1D"). Unique-editor and churn counts are recomputed from the raw revisions
+at whatever grain you ask for -- they are NOT safe to sum from a
+finer-grained CSV, since the same editor active in two different hours of
+one day would get double-counted as two people. Edit counts and rates are
+safe to resample after the fact; uniqueness is not.
 
 Usage:
     python structure_revisions.py data/rittenhouse_revisions.json \\
         --bots data/bot_usernames.json \\
-        --out data/rittenhouse_timeseries.csv
+        --out data/rittenhouse_hourly.csv \\
+        --freq 1h
 """
 
 import argparse
@@ -19,10 +27,17 @@ import pandas as pd
 # this catches manual reverts where an editor retypes an old version
 # and describes it in the edit summary without using a revert tool.
 REVERT_COMMENT_PATTERN = re.compile(
-    r"\brv\b|\brvv\b|revert(ed|ing)?|undid revision|undo", re.IGNORECASE
+    r"\brv\b|\brvv\b|revert(?:ed|ing)?|undid revision|undo", re.IGNORECASE
 )
 
 REVERT_TAGS = {"mw-rollback", "mw-undo", "mw-manual-revert"}
+
+# Sentinel for revisions where the editor's identity was suppressed by
+# Wikipedia (RevisionDelete/oversight) -- the 'user' field is simply absent
+# from the API response for these. Common on legally sensitive articles.
+# Treated as its own category rather than bot/human/anonymous, since we
+# genuinely can't tell who made the edit.
+HIDDEN_USER_SENTINEL = "[hidden]"
 
 
 def load_revisions(path: str) -> pd.DataFrame:
@@ -35,9 +50,16 @@ def load_revisions(path: str) -> pd.DataFrame:
 
 
 def classify_editors(df: pd.DataFrame, bot_usernames: set[str]) -> pd.DataFrame:
+    # Revision-deleted/oversighted edits have no 'user' at all (NaN after
+    # JSON->DataFrame conversion). Give them a sentinel so grouping/lookups
+    # downstream don't choke on NaN, and flag them explicitly.
+    df["is_hidden_user"] = df["user"].isna()
+    df["user"] = df["user"].fillna(HIDDEN_USER_SENTINEL)
+
     df["is_bot"] = df["user"].isin(bot_usernames)
-    # userid == 0 means the edit was made by an IP / logged-out editor
-    df["is_anonymous"] = df["userid"] == 0
+    # userid == 0 means the edit was made by an IP / logged-out editor.
+    # Hidden-user rows may also have NaN userid -- don't let that read as 0.
+    df["is_anonymous"] = (df["userid"] == 0) & ~df["is_hidden_user"]
     return df
 
 
@@ -60,38 +82,42 @@ def compute_size_change(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def build_hourly_timeseries(df: pd.DataFrame) -> pd.DataFrame:
+def build_timeseries(df: pd.DataFrame, freq: str = "1h") -> pd.DataFrame:
     df = df.set_index("timestamp")
 
     # First-ever-appearance timestamp per editor, used to flag "new" editors
-    # within a given hour (their very first edit to this article).
+    # within a given bin (their very first edit to this article).
     first_seen = df.groupby("user").apply(lambda g: g.index.min())
 
-    def hourly_group(g: pd.DataFrame) -> pd.Series:
-        editors_this_hour = set(g["user"])
+    def group_metrics(g: pd.DataFrame) -> pd.Series:
+        editors_this_bin = set(g["user"])
         new_editors = sum(
-            1 for u in editors_this_hour if first_seen[u] >= g.index.min()
+            1 for u in editors_this_bin if first_seen[u] >= g.index.min()
             and first_seen[u] <= g.index.max()
         )
         human_edits = g[~g["is_bot"]]
         return pd.Series({
-            "edits_per_hour": len(g),
+            "edits_count": len(g),
             "unique_editors": g["user"].nunique(),
             "new_editors": new_editors,
             "mean_edit_size": human_edits["size_change"].abs().mean() if len(human_edits) else 0.0,
             "revert_rate": g["is_revert"].mean() if len(g) else 0.0,
             "bot_edit_share": g["is_bot"].mean() if len(g) else 0.0,
+            "hidden_user_share": g["is_hidden_user"].mean() if len(g) else 0.0,
         })
 
-    hourly = df.resample("1h").apply(lambda g: hourly_group(g) if len(g) else pd.Series({
-        "edits_per_hour": 0, "unique_editors": 0, "new_editors": 0,
+    empty_bin = pd.Series({
+        "edits_count": 0, "unique_editors": 0, "new_editors": 0,
         "mean_edit_size": 0.0, "revert_rate": 0.0, "bot_edit_share": 0.0,
-    }))
+        "hidden_user_share": 0.0,
+    })
 
-    # editor_churn: fraction of this hour's editors who are new to the article
-    hourly["editor_churn"] = (hourly["new_editors"] / hourly["unique_editors"]).fillna(0.0)
+    binned = df.resample(freq).apply(lambda g: group_metrics(g) if len(g) else empty_bin)
 
-    return hourly.reset_index()
+    # editor_churn: fraction of this bin's editors who are new to the article
+    binned["editor_churn"] = (binned["new_editors"] / binned["unique_editors"]).fillna(0.0)
+
+    return binned.reset_index()
 
 
 def main():
@@ -99,6 +125,7 @@ def main():
     parser.add_argument("revisions_json", help="Path to raw revisions JSON")
     parser.add_argument("--bots", required=True, help="Path to bot usernames JSON")
     parser.add_argument("--out", required=True, help="Output CSV path")
+    parser.add_argument("--freq", default="1h", help="Pandas offset alias for bin width, e.g. 1h, 1D (default: 1h)")
     args = parser.parse_args()
 
     with open(args.bots, encoding="utf-8") as f:
@@ -115,9 +142,9 @@ def main():
     print(f"  anonymous edits: {df['is_anonymous'].sum()} ({df['is_anonymous'].mean():.1%})")
     print(f"  reverts: {df['is_revert'].sum()} ({df['is_revert'].mean():.1%})")
 
-    hourly = build_hourly_timeseries(df)
-    hourly.to_csv(args.out, index=False)
-    print(f"Saved {len(hourly)} hourly rows to {args.out}")
+    ts = build_timeseries(df, freq=args.freq)
+    ts.to_csv(args.out, index=False)
+    print(f"Saved {len(ts)} rows at freq={args.freq} to {args.out}")
 
 
 if __name__ == "__main__":
