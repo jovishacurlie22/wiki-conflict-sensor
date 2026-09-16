@@ -38,7 +38,7 @@ import argparse
 import numpy as np
 import pandas as pd
 
-SIGNALS = ["anomaly_score", "z_edits_count", "z_revert_rate", "z_editor_churn"]
+SIGNALS_DEFAULT = ["anomaly_score", "z_edits_count", "z_revert_rate", "z_editor_churn"]
 N_PERMUTATIONS = 10_000
 RANDOM_SEED = 42  # fixed so the reported p-values are reproducible
 
@@ -86,8 +86,11 @@ def main():
     parser.add_argument("--events", action="append", required=True, help="Comma-separated event dates for matching --input")
     parser.add_argument("--label", action="append", required=True, help="Display label for matching --input")
     parser.add_argument("--window-days", type=int, default=3, help="Window half-width in days (default: 3, matches pre-registration)")
+    parser.add_argument("--signals", default=",".join(SIGNALS_DEFAULT),
+                         help=f"Comma-separated column names to test (default: {','.join(SIGNALS_DEFAULT)})")
     parser.add_argument("--out", default=None, help="Optional CSV path to save the results table")
     args = parser.parse_args()
+    signals = [s.strip() for s in args.signals.split(",")]
 
     if not (len(args.input) == len(args.events) == len(args.label)):
         raise ValueError("--input, --events, and --label must be given the same number of times, in matching order")
@@ -100,7 +103,7 @@ def main():
         events = [pd.Timestamp(d.strip(), tz="UTC") for d in events_str.split(",")]
 
         for event in events:
-            for signal in SIGNALS:
+            for signal in signals:
                 res = permutation_test(df, event, signal, args.window_days, rng)
                 rows.append({
                     "article": label,
