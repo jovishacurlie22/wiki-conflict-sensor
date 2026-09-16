@@ -1,5 +1,7 @@
-requests
 pandas
 numpy
+requests
 matplotlib
 jupyter
+nbformat
+nbclient

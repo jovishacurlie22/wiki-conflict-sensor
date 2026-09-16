@@ -1,1 +1,19 @@
-malala_revisions.json
+# Virtual environment
+venv/
+.venv/
+
+# Raw revision dumps can be multi-MB per article -- regenerate via scripts/
+# rather than committing. Feel free to remove these lines if you'd rather
+# version the data for reproducibility.
+data/*_revisions.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
