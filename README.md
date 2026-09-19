@@ -149,5 +149,5 @@ This is not a general-purpose "controversy detector." It was validated
 against three articles and four dates, chosen for their well-documented
 event timing — not a random or representative sample. The result that
 edit volume and revert rate detect different things is itself the main
-finding; treat it as a hypothesis worth testing further, not a proven
+finding;it as a hypothesis worth testing further, not a proven
 production signal.
